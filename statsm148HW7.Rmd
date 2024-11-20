@@ -1,0 +1,356 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+---
+title: "Vanessa Chan, Stats M148 Homework 6"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(tidyverse)
+library(data.table)
+library(prophet)
+library(rstan)
+data <- fread("dat_train1.csv")
+head(data)
+```
+## Cleaning from previous homeworks
+```{r}
+data <- data.frame(data)
+colnames(data) <- c("customer_id", "account_id", "ed_id", "event_name", "event_timestamp", "journey_steps_until_end")
+```
+
+
+```{r}
+# library(tidyverse)
+dist_data <- distinct(data[+-6])
+
+rand <- sample(unique(dist_data$customer_id)+ 1000000)
+random_sample <- dist_data %>%
+  filter(customer_id %in% rand)
+
+random_sample <- random_sample %>%
+  group_by(customer_id,account_id) %>%
+  mutate(steps = n())
+```
+# Task 1
+## Time series first action
+```{r}
+not_user <- c(15, 16, 17, 12, 13, 14, 37, 28)
+end_data <- max(random_sample$event_timestamp)
+rand1 <- dist_data %>%
+  group_by(customer_id, account_id) %>%
+  filter(max(event_timestamp) <= end_data -days(60)) %>%
+  filter(!(ed_id %in% not_user))
+
+rand2 <- dist_data %>%
+  group_by(customer_id, account_id) %>%
+  filter(max(event_timestamp) <= end_data -days(60)) %>%
+  filter(!(ed_id %in% c(15, 16, 17, 12, 13, 14, 37)))
+
+monthly2 <- rand2 %>%
+  group_by(customer_id, account_id) %>%
+  filter(ed_id == 28) %>%
+  mutate(year = year(event_timestamp), month = month(event_timestamp)) %>%
+  distinct(customer_id, account_id, year, month) %>%
+  group_by(year, month) %>%
+  summarise(count = n_distinct(customer_id, account_id)) %>%
+  filter(year != 2020)
+
+new_row <- data.frame(year = 2022, month = 12, count = 6301)
+monthly2 <- bind_rows(monthly2, new_row)
+monthly2 <- bind_cols(monthly2, monthly1[3])
+
+max(monthly2$count)
+min(monthly2$count)
+```
+```{r}
+month_dates <- character(0)
+for (i in 1:nrow(monthly2)) {
+  month_dates <- c(month_dates, paste(monthly2$year[i], monthly2$month[i], "01", sep = "-"))
+}
+month_dates <- as.Date(month_dates)
+ts <- data.frame(ds = month_dates, cap = 25000, floor = 5000, y = monthly2$count)
+ts_model <- prophet(ts, growth = "logistic", yearly.seasonality = 4, seasonality.mode = "additive",
+                    n.changepoints = 0, weekly.seasonality = FALSE,
+                    daily.seasonality = FALSE)
+
+future_dates <- make_future_dataframe(ts_model, periods = 23, freq = "month")
+future_dates <- data.frame(future_dates, floor = 5000, cap = 25000)
+twenty23 <- future_dates[25:36,]
+forecast <- predict(ts_model, future_dates)
+prophet_plot_components(ts_model, forecast)
+plot(ts_model, forecast, xlab = "Date")
+summary(forecast)
+```
+```{r}
+twenty23 <- future_dates[25:36,]
+forecast <- predict(ts_model, future_dates)
+prophet_plot_components(ts_model, forecast)
+plot(ts_model, forecast, xlab = "Date")
+summary(forecast)
+
+sample_se <- sd(forecast$yhat) / sqrt(length(forecast$yhat))
+critical_value <- qt(1 - 0.05 / 2, df = length(forecast$yhat) - 1)
+
+ci <- c(mean(forecast$yhat) - critical_value * sample_se, mean(forecast$yhat) + critical_value * sample_se)
+mean(forecast$yhat)
+ci
+```
+```{r}
+ts_model <- prophet(ts, yearly.seasonality = 4, seasonality.mode = "additive",
+                    n.changepoints = 0, weekly.seasonality = FALSE,
+                    daily.seasonality = FALSE)
+
+future_dates <- make_future_dataframe(ts_model, periods = 23, freq = "month")
+future_dates <- data.frame(future_dates, floor = 18, cap = 50)
+forecast <- predict(ts_model, future_dates)
+prophet_plot_components(ts_model, forecast)
+plot(ts_model, forecast)
+```
+```{r}
+monthly1 <- dist_data %>%
+  group_by(customer_id, account_id) %>%
+  mutate(start = min(event_timestamp)) %>% 
+  mutate(year = year(start), month = month(start)) %>%
+  distinct(customer_id, account_id, year, month) %>%
+  group_by(year, month) %>%
+  summarise(count = n_distinct(customer_id, account_id)) %>%
+  filter( year != 2020)
+
+# impute missing december 2022 with december 2021 count
+new_row <- data.frame(year = 2022, month = 12, count = 14)
+monthly1 <- bind_rows(monthly1, new_row)
+summary(monthly1$count)
+monthly1 <- monthly1[-c(25,26),]
+summary(monthly1)
+```
+
+
+
+```{r}
+month_dates <- character(0)
+for (i in 1:nrow(monthly1)) {
+  month_dates <- c(month_dates, paste(monthly1$year[i], monthly1$month[i], "01", sep = "-"))
+}
+month_dates <- as.Date(month_dates)
+ts <- data.frame(ds = month_dates, cap = 90000, floor = 30000, y = monthly1$count)
+ts_model <- prophet(ts, growth = "logistic", yearly.seasonality = 4, seasonality.mode = "additive",
+                    n.changepoints = 0, weekly.seasonality = FALSE,
+                    daily.seasonality = FALSE)
+
+future_dates <- make_future_dataframe(ts_model, periods = 23, freq = "month")
+future_dates <- data.frame(future_dates, floor = 30000, cap = 90000)
+forecast <- predict(ts_model, future_dates)
+prophet_plot_components(ts_model, forecast)
+plot(ts_model, forecast, xlab = "Date")
+summary(forecast)
+```
+```{r}
+ts_model <- prophet(ts, yearly.seasonality = 4, seasonality.mode = "additive",
+                    n.changepoints = 0, weekly.seasonality = FALSE,
+                    daily.seasonality = FALSE)
+
+future_dates <- make_future_dataframe(ts_model, periods = 23, freq = "month")
+future_dates <- data.frame(future_dates, floor = 18, cap = 50)
+forecast <- predict(ts_model, future_dates)
+prophet_plot_components(ts_model, forecast)
+plot(ts_model, forecast)
+```
+The time series predicts that aside from the the seasonal pattern, there will be a slight decrease in started journeys from year to year. I am skeptical with this prediction, mostly because I believe the model is extrapolating a dip in users from 2021 to 2022, which could be due to the CCOVID-19 related economic downturn in 2022 leading users to not want to spend on more products, especially when Fingerhut's audience is already financialy vulnerable individuals. As the economy is recovering, I doubt this downward trend will continue.
+
+But interestingly, we find that most users tend to start their user journeys around April and March, which is tax season. This is different from the pattern Jason found where most people have their orders shipped towards the holiday season. It is possible that while the holiday season stimulates existing users to buy presents on Fingerhut for their loved ones, most people discover Fingerhut during tax season when they are examining their own financial situation.
+
+## Task 2
+Firstly, one thing I could have done to improve my model was to train the model on more data. Because my randomforest model (predicting on the first 5 steps) is so volatile, I was probably should have trained on a much larger set of data than the random sample we took. Additionally, I should have trained on the event "order placed" rather tha "order_shipped" as that is a user-motivated action and having "order_placed" in the data likely leads to overfitting as they are often directly correlated to each other. Lastly, I am still wondering if this entire path of predicting on the first 5 steps is even stable enough to be useful, and whether I should pivot to predicting on different variables instead.
+
+
+# Task 4: Survival Analysis
+Here I constructed a survival analysis of when someone shipped an order, so a journey "dying out" means it is has been successfully converted into a order_shipped.
+```{r}
+ed_ids_use <- c(1,3,4,5,6,11,19,21,24,28,29)
+
+survivor <- random_sample %>%
+  group_by(account_id, customer_id) %>%
+  mutate(length = max(event_timestamp) - min(event_timestamp)) %>% 
+  select(-event_timestamp) %>%
+  group_by(account_id, customer_id, event_name) %>%
+  mutate(num= n()) %>%
+  ungroup() %>%
+  distinct() %>%
+  select(customer_id,account_id, event_name, length, num, steps) %>%
+  pivot_wider(
+    names_from = event_name, 
+    values_from = num
+  ) %>%
+  mutate_all(~ replace_na(., 0))
+survivor <- survivor %>%
+  mutate(length = as.numeric(length / 60 / 60 /24 )) %>%
+  mutate(all_die = 1)
+
+#install.packages("survival")
+library(survival)
+#install.packages("ggfortify")
+library(ggfortify)
+
+km <- with(survivor, Surv(length, order_shipped))
+
+km_fit <- survfit(Surv(length, all_die) ~ order_shipped, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "All Journeys vs. Successful Journeys",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+
+survivor <- survivor %>%
+  mutate(browse_products_b = as.numeric(browse_products !=0)) %>%
+  mutate(view_cart_b = as.numeric(view_cart!=0)) %>%
+  mutate(begin_checkout_b = as.numeric(view_cart!=0)) %>%
+  mutate(campaignemail_clicked_b = as.numeric(campaignemail_clicked!=0) )
+```
+In this survival analysis, the red line symbolizes all active journeys and the blue line symbolizes successful journeys. The x-axis is based on number of days they were active on the site. Here, we can see that out of all the journeys that did manage to become successes, most of them (75%) died out at just over 50 days. The huge visual split then indicates that the number of days is a significant factor in predicting someone's success.
+
+```{r}
+km <- with(survivor, Surv(steps, order_shipped))
+
+km_fit <- survfit(Surv(steps, all_die) ~ order_shipped, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit)
+```
+```{r}
+survivor <- survivor %>%
+  mutate(third_partyb = as.numeric(`pre-application_(3rd_party_affiliates)` !=0))
+
+km <- with(survivor, Surv(steps, order_shipped))
+
+km_fit <- survfit(Surv(steps, order_shipped) ~ third_partyb, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "3rd Party vs. Non 3rd Party",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+This survival analysis is conflicting, showing that there is a higher proportion of orders_shipped at each number of steps than there are total journeys. I'm not sure why this graph isn't able to work given that the other survival analysis based on journey length seems to be interpreted normally. Hence, from here on out, variable analysis will be done using length.
+
+Next, I conducted some variable analysis using a boolean of each action (0 or 1) to symbolize whether the user had done that action or not. It would have been nice to also insert some numerical correlation (whether a user does that action more) but I'm not sure that can be done with the survivor package.
+### Browse Products
+
+```{r}
+km_fit <- survfit(Surv(length, order_shipped) ~  browse_products_b, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "Survival Analysis - Browse Products",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+Here we can see that out of the people who did browse products (blue) tended to have their orders shipped earlier than those who did not (red), seeing that their journey "died off" faster. This means that browsing products is a good predictor of whether someone will place and order. As you can see, those who did browse products are 50% more likely to place an order than those who did not.
+
+### View Cart
+```{r}
+km <- with(survivor, Surv(length, order_shipped))
+
+km_fit <- survfit(Surv(length, order_shipped) ~ view_cart_b, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "Survival Analysis - View Cart",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+Here we can see that out of the people who did view_cart (blue) tended to have their orders shipped earlier than those who did not (red), seeing that their journey "died off" faster. This is expected behavior, given that those who view their cart are likely checking their order before they place it. My purpose with this graph it to check whether a significant amount of people might be viewing their carts and then deciding not to purchase after seeing the final amount. This seems to not be the case, which is healthy for Fingerhut.
+
+### Begin Checkout
+```{r}
+km <- with(survivor, Surv(length, order_shipped))
+
+km_fit <- survfit(Surv(length, order_shipped) ~  begin_checkout_b, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "Survival Analysis - Begin Checkout",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+```{r}
+survivor <- survivor %>%
+  mutate(catalog_mail = `catalog_(mail)`) %>%
+  mutate_at(13, ~ as.numeric(. != 0))
+
+km <- with(survivor, Surv(length, order_shipped))
+
+km_fit <- survfit(Surv(length, order_shipped) ~ catalog_mail, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "Survival Analysis - Catalog Mail",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+```{r}
+survivor <- survivor %>%
+  mutate(declined_b = as.numeric(application_web_declined !=0)) 
+
+km <- with(survivor, Surv(length, order_shipped))
+
+km_fit <- survfit(Surv(length, order_shipped) ~ declined_b, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "Survival Analysis - Web View",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+Here we can see that out of the people who did begin_checkout (blue) tended to have their orders shipped earlier than those who did not (red), seeing that their journey "died off" faster. This is expected behavior, given that those begin checkout are likely to complete the process. My purpose with this graph it to check whether a significant amount of people might be beginning checkout and then deciding not to purchase after seeing the final amount. This seems to be not the case, and especially because it seems like 100% of people who began checkout did eventually finish the checkout, even if it is 300 days after they began it.
+
+### Click Campaign Email
+```{r}
+km <- with(survivor, Surv(length, order_shipped))
+
+km_fit <- survfit(Surv(length, order_shipped) ~ campaignemail_clicked_b, data=survivor)
+summary(km_fit, times = c(1,30,60,90*(1:10)))
+
+autoplot(km_fit) +
+  labs(
+    title = "Survival Analysis - Campaign Email Clicked",
+    x = "Days",
+    y = "% Yet to Ship"
+  )
+```
+```{r}
+random_sample
+```
+Here we can see that out of the people who did click on the campaign email (blue) tended to have their orders shipped earlier than those who did not (red), seeing that their journey "died off" faster when the order was shipped. This graph shows that people who did click the campaign email were about 20-30% more likely to have their orders shipped than those who did not click the campaign email at the same point in time.
+
+```{r}
+train
+```
