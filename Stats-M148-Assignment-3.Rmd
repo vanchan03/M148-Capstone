@@ -1,0 +1,244 @@
+---
+title: "Stats 148 Assignment 3"
+author: "Vanessa Chan"
+date: "2024-04-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(tidyverse)
+library(data.table)
+data <- fread("dat_train1.csv")
+head(data)
+```
+```{r}
+data <- data.frame(data)
+colnames(data) <- c("customer_id", "account_id", "ed_id", "event_name", "event_timestamp", "journey_steps_until_end")
+data
+
+```
+## Data Cleaning
+
+In order to produce a training data set with artificially incomplete journeys of which we can train against known outcomes, we also attempted cutting the data at regular intervals of 120 days, allowing for completed journeys to be defined as users who had been inactive for the past 60 days. From there, we sampled incomplete journeys, or journeys that were still active less than 60 days away from the "cut time". The reason for this is to simulate how an actual journey would be cut when sampling the data, in which longer journeys would be more likely sampled than shorter journeys, leading to a natural bias towards incomplete journeys. To illustrate this effect in the data cleaning, I printed the number of complete and incompleted journeys sampled from each cut. There were  more incomplete journeys (8361) than completed journeys (5964) after all the cuts. On the other hand, we illustrate the cons of this sampling method, which is data loss. Of the original 16,000+ user journeys in the sample, only 8361 were retained in the final set. However, this is acceptable because the full data set has over a million user journeys, and losing half the data would still give us plenty of data to work with
+
+```{r}
+library(tidyverse)
+dist_data <- distinct(data[+-6])
+dist_data
+
+rand <- sample(unique(dist_data$customer_id)+ 10000)
+random_sample <- dist_data %>%
+  filter(customer_id %in% rand)
+random_sample
+ 
+clean2 <- data.frame()
+
+first_cut <- max(random_sample$event_timestamp) - days(60)
+for (n in 1:4) {
+  second_cut <- first_cut - days(120*n)
+  clean1 <-  random_sample %>%
+    group_by(customer_id, account_id) %>%
+    mutate(journey_steps_to_end = row_number())  %>%
+    mutate(time_start = min(event_timestamp)) %>%
+    mutate(time_end = max(event_timestamp)) %>% 
+    mutate(success = any(ed_id == 28) > 0) %>%
+    filter(time_end < first_cut) %>%
+    filter(time_end > second_cut) %>%
+    mutate(complete = (time_end + days(60)) > first_cut)
+  first_cut <- second_cut
+  clean2 <- rbind(clean2, clean1[clean1$complete == 0,])
+  print(paste("Iteration", n, "- Complete:", sum(clean1$complete), "- Incomplete:", nrow(clean1) - sum(clean1$complete)))
+}
+
+  
+dim(clean2)[1] / dim(random_sample)[1] 
+
+clean2
+max(random_sample$event_timestamp) - min(random_sample$event_timestamp)
+```
+```{r}
+clean2 <- clean2 %>%
+  group_by(customer_id, account_id) %>%
+  mutate(time_diff = time_end-time_start) %>%
+  select(customer_id, account_id, time_diff, success, ed_id, journey_steps_to_end) %>%
+  pivot_wider(
+    names_from = journey_steps_to_end, 
+    values_from = ed_id
+  )
+
+steps <- clean2[5:240] %>%
+  mutate(steps = 240 - rowSums(is.na(.))) %>%
+  select(steps)
+
+clean2 <- clean2 %>%
+  bind_cols(steps) %>%
+  mutate_all(~ replace_na(., 0)) %>%
+  mutate_at(vars(4), as.numeric) %>%
+  mutate_at(vars(4:240), as.factor) %>%
+  rename_with(~ paste0("step", .), 5:240) %>%
+  mutate_at(vars(time_diff), as.numeric)
+  
+train <- clean2[3:9] %>% bind_cols(steps) 
+train[-2]
+
+```
+## The Randomforest Model and the Testing Data Set
+
+Note: I got a lower OOB error rate for the full randomforest model (all 240 steps, which is the maximum journey length for this sample). However, it simply wouldn't make sense to have so many PDP and ICE plots, so I cut it short to 5 with the hopes to find something useful in predicting success based on the first 5 steps of each user's journey.
+```{r}
+library(randomForest)
+rfm1 <- randomForest(success~ .,data=train,mtry=7,importance=TRUE)
+rfm1
+
+varImpPlot(rfm1)
+
+```
+
+# test set
+```{r}
+set.seed(20)
+rand2 <- sample(unique(dist_data$customer_id)+ 12000)
+random_sample2 <- dist_data %>%
+  filter(customer_id %in% rand2)
+ 
+cleantest <- data.frame()
+first_cut <- max(random_sample2$event_timestamp) - days(60)
+for (n in 1:12) {
+  second_cut <- first_cut - days(120*n)
+  clean1 <-  random_sample2 %>%
+    group_by(customer_id, account_id) %>%
+    mutate(journey_steps_to_end = row_number())  %>%
+    mutate(time_start = min(event_timestamp)) %>%
+    mutate(time_end = max(event_timestamp)) %>% 
+    mutate(success = any(ed_id == 28) > 0) %>%
+    filter(time_end < first_cut) %>%
+    filter(time_end > second_cut) %>%
+    mutate(complete = (time_end + days(60)) > first_cut)
+  first_cut <- second_cut
+  cleantest <- rbind(cleantest, clean1[clean1$complete == 0,])
+}
+
+
+dim(cleantest)[1] / dim(random_sample)[1] 
+
+  
+
+max(random_sample$event_timestamp) - min(random_sample$event_timestamp)
+
+
+cleantest <- cleantest %>%
+  group_by(customer_id, account_id) %>%
+  mutate(time_diff = time_end-time_start) %>%
+  select(customer_id, account_id, time_diff, success, ed_id, journey_steps_to_end) %>%
+  pivot_wider(
+    names_from = journey_steps_to_end, 
+    values_from = ed_id
+  )
+
+cleantest
+
+steps <- cleantest[5:267] %>%
+  mutate(steps = 267 - rowSums(is.na(.))) %>%
+  select(steps)
+
+cleantest <- cleantest[1:240] %>%
+  mutate_all(~ replace_na(., 0)) %>%
+  mutate_at(vars(4), as.numeric) %>%
+  mutate_at(vars(4:240), as.factor) %>%
+  rename_with(~ paste0("step", .), 4:240)
+cleantest <- cleantest[-c(1,2)]
+cleantest <- cleantest[1:7] %>% bind_cols(steps)
+
+cleantest
+
+```
+
+```{r}
+pred <- predict(rfm1, cleantest[-2])
+table(pred.train, cleantest[2])
+```
+## PDP and ICE Plots
+```{r}
+install.packages("pdp")
+library(pdp)
+library(ggplot2)
+pdp1 <- partial(rfm1, "time_diff", train)
+pdp2 <- partial(rfm1, "step1", train)
+pdp3 <- partial(rfm1, "step2", train)
+pdp4 <- partial(rfm1, "step3", train)
+pdp5 <- partial(rfm1, "step4", train)
+pdp6 <- partial(rfm1, "step5", train)
+pdp7 <- partial(rfm1, "steps", train)
+
+ggplot(pdp1, aes(x = time_diff, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "time_diff", y = "Partial Dependence")
+
+ggplot(pdp2, aes(x = step1, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "step1", y = "Partial Dependence")
+
+ggplot(pdp3, aes(x = step2, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "step2", y = "Partial Dependence")
+
+ggplot(pdp4, aes(x = step3, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "step3", y = "Partial Dependence")
+
+ggplot(pdp5, aes(x = step4, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "step4", y = "Partial Dependence")
+
+ggplot(pdp6, aes(x = step4, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "step6", y = "Partial Dependence")
+
+ggplot(pdp7, aes(x = steps, y = yhat)) +
+  geom_line() +
+  stat_smooth(method = "loess", se = FALSE) + 
+  labs(x = "steps", y = "Partial Dependence")
+```
+At this point, it looked like all the step-based values would simply be histograms. Because of this, I decided to redo the PDP and ICE plots in the iml package for number of steps and time difference, hoping that it would be more interpretable. 
+```{r}
+install.packages("iml")
+library(iml)
+
+Y <- droplevels(train$success)
+X <- train
+predictor <- Predictor$new(rfm1, data = X, y = Y)
+
+pdp_steps <- FeatureEffect$new(predictor, feature = "steps", grid.size = 10, method = "pdp")
+pdp_steps$plot()
+
+pdp_diffs <- FeatureEffect$new(predictor, feature = "time_diff", grid.size = 10, method = "pdp")
+pdp_diffs$plot()
+
+
+ice_steps <- FeatureEffect$new(predictor, feature = "steps", grid.size = 10, method = "ice")
+ice_steps$plot()
+
+ice_diffs <- FeatureEffect$new(predictor, feature = "time_diff", grid.size = 10, method = "ice")
+ice_diffs$plot()
+
+```
+## Regarding Randomforest
+Given the results from above, I will describe two reasons why column-wise step-basedpredictions are not an effective for interpretability despite the out-of-bound error being a reasonable 12% on the Randomforest model. The first is that it treats each event as an individual category. I got the error message "New factor levels not present in training data", which means that ed_ids that were not in step i of my training data could appear in step i of my testing data, making it very difficult to fit the model to different testing sets. Secondly, even if we were to assume that we would not encounter the above problem, the pdp plots print as a generally uninterpretable discrete plot. If we wanted to find out which ed_ids were most common either per step or in general between successful and unsuccessful journeys, a standard histogram analysis of step frequency is likely more effective.
+
+On diffs and step count, they seemed like variables which would have slightly more interpretive value when compared to the step-based predictors that were becoming histograms of the PDP plots. However, the PDP plots simply reflect a very natural distribution for both successes and failures, with most time differences congregating between 0 and 1e+07 seconds and an increase in steps naturally increasing the likelihood of both successes and failures.
